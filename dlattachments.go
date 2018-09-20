@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -12,14 +13,52 @@ import (
 	//"golang.org/x/crypto/ssh/terminal"
 )
 
-func downloadFile(filepath string, url string) {
-	out, err := os.Create(filepath)
+var jiraClient *jira.Client
+
+// returns true if the filename has an image extension
+func HasImageExt(file string) bool {
+	e := filepath.Ext(file)
+	if strings.EqualFold(e, ".png") ||
+		strings.EqualFold(e, ".gif") ||
+		strings.EqualFold(e, ".jpg") ||
+		strings.EqualFold(e, ".pdf") ||
+		strings.EqualFold(e, ".bpm") ||
+		strings.EqualFold(e, ".tiff") ||
+		strings.EqualFold(e, ".svg") {
+		return true
+	}
+	return false
+}
+
+func downloadFile(url string, filename string) {
+	fmt.Printf("downloading %s --> %s\n", url, filename)
+	out, err := os.Create(filename)
 	if err != nil {
-		fmt.Print("Create file: %s failed, error: %s\n", filepath, err.Error())
+		fmt.Print("Create file: %s failed, error: %s\n", filename, err.Error())
 	}
 	defer out.Close()
 
 	resp, err := http.Get(url)
+	if err != nil {
+		fmt.Print("downloadFile Get Failed: %s\n", err.Error())
+	}
+	defer resp.Body.Close()
+
+	_, err = io.Copy(out, resp.Body)
+	if err != nil {
+		fmt.Print("io.Copy Failed: %s\n", err.Error())
+	}
+}
+
+func downloadAttachment(client *jira.Client, id string, filename string) {
+	fmt.Printf("downloading attachment %s --> %s\n", id, filename)
+	out, err := os.Create(filename)
+	if err != nil {
+		fmt.Print("Create file: %s failed, error: %s\n", filename, err.Error())
+	}
+	defer out.Close()
+
+	resp, err := client.Issue.DownloadAttachment(id)
 	if err != nil {
 		fmt.Print("downloadFile Get Failed: %s\n", err.Error())
 	}
@@ -61,8 +100,20 @@ func downloadIssueAttachments(client *jira.Client, jiraKey string) {
 	for i, attachment := range issue.Fields.Attachments {
 		current := time.Now()
 		fmt.Printf("attament content[%d]: %s\n\n", i, attachment.Content)
-		downloadFile(current.String(), attachment.Content)
+		_, file := filepath.Split(attachment.Content)
+		timeString := strings.Replace(current.String(), " ", "-", -1)
+		name := timeString + "-" + file
+		fmt.Printf("timeString: %s, name: %s, file: %s\n", timeString, name, file)
+		//downloadFile(client, name, attachment.Content)
+		downloadAttachment(client, attachment.ID, file)
+		os.Exit(0)
 	}
+}
+
+func handleIssue(issue jira.Issue) error {
+	fmt.Printf("Handling %v\n", issue)
+	downloadIssueAttachments(jiraClient, issue.Key)
+	return nil
 }
 
 func main() {
@@ -76,43 +127,16 @@ func main() {
 		fmt.Printf("\nerror: %v\n", err)
 		return
 	}
-
-	//u, _, err := client.User.Get("ola.nordstrom@optimizely.com")
-	//u, _, err := client.User.Get("ola.nordstrom")
+	jiraClient = client
 
 	if err != nil {
 		fmt.Printf("\nerror: %v\n", err.Error())
 		return
 	}
 
-	//fmt.Printf("\nEmail: %v\nSuccess!\n", u.EmailAddress)
-
-	//issue, _, _ := client.Issue.Get("GRC-3461", nil)
-	//fmt.Printf("issue: %s\n", issue)
-	//jql=labels%20IN%20(%22soc2_IRL_fy19%22)
-
-	issues, issuesResponse, err := client.Issue.Search("labels IN (soc2_IRL_fy19)", nil)
+	err = client.Issue.SearchPages("labels IN (soc2_IRL_fy19)", nil, handleIssue)
 	if err != nil {
 		fmt.Printf(err.Error())
 		return
 	}
-	//fmt.Printf("issues: %s\n", issues)
-	/*
-	   "maxResults": 50,
-	   "startAt": 0,
-	   "total": 109
-
-	*/
-	fmt.Printf("issues length: %d, \n\nresponse: %s\n\n", len(issues), issuesResponse)
-	//fmt.Printf("issues[0]: %s\n", issues[0])
-
-	for _, issue := range issues {
-
-		//fmt.Printf("issue: %s\n\n", issue)
-		//fmt.Printf("key: %s\n\n", issue.Key)
-		downloadIssueAttachments(client, issue.Key)
-		os.Exit(0)
-
-	}
-
 }
