@@ -11,10 +11,6 @@ https://mysite.atlassian.net/secure/attachment/71038/Chartio+Customer+Deletion.p
 ...
 ```
 
-```
-curl -v https://mysite.atlassian.net --user me@example.com:my-api-token
-```
-
 ### Notes
 
 To verify a key do
