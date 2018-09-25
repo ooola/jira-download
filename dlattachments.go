@@ -1,19 +1,24 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	jira "github.com/andygrunwald/go-jira"
 	"io"
 	"io/ioutil"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
 var jiraClient *jira.Client
-var sequenceDownloads bool
-var FileNamesChannel chan string
+
+var (
+	username  = flag.String("username", "", "Jira Username")
+	password  = flag.String("password", "", "Jira Auth Key")
+	jiraURL   = flag.String("jiraURL", "https://optimizely.atlassian.net", "URL where Jira is running")
+	jiraQuery = flag.String("jiraQuery", "labels IN (soc2_IRL_fy19)", "The jira query of which ticket attachments to fetch")
+)
 
 // returns true if the filename has an image extension
 func HasImageExt(file string) bool {
@@ -28,45 +33,6 @@ func HasImageExt(file string) bool {
 		return true
 	}
 	return false
-}
-
-func writePNGFilenamesToChannel(c chan string) {
-	i := 1
-	for {
-		s := fmt.Sprintf("%04d.png", i)
-		c <- s
-		i++
-	}
-}
-
-func intChannels() {
-	c := make(chan (string))
-	go writePNGFilenamesToChannel(c)
-
-	for i := 0; i < 10; i++ {
-		s := <-c
-		fmt.Println("%s", s)
-	}
-}
-
-func downloadFile(url string, filename string) {
-	fmt.Printf("downloading %s --> %s\n", url, filename)
-	out, err := os.Create(filename)
-	if err != nil {
-		fmt.Print("Create file: %s failed, error: %s\n", filename, err.Error())
-	}
-	defer out.Close()
-
-	resp, err := http.Get(url)
-	if err != nil {
-		fmt.Print("downloadFile Get Failed: %s\n", err.Error())
-	}
-	defer resp.Body.Close()
-
-	_, err = io.Copy(out, resp.Body)
-	if err != nil {
-		fmt.Print("io.Copy Failed: %s\n", err.Error())
-	}
 }
 
 func downloadAttachment(client *jira.Client, id string, filename string) {
@@ -110,14 +76,10 @@ func downloadIssueAttachments(client *jira.Client, jiraKey string) {
 		fmt.Printf("error fetching: %s response code is not 200, it is: \n", jiraKey, response.StatusCode)
 		return
 	}
-	//fmt.Printf("\n\n issue: %s\n", issue)
 
-	//fmt.Printf("len issue.Fields: %v\n", issue.Fields)
-	//fmt.Printf("\n\t\tdata: %v\n", issue.Fields.Attachments)
-	//fmt.Printf("\n\t\ttype: %v\n", len(issue.Fields.Attachments))
 	for _, attachment := range issue.Fields.Attachments {
 		_, file := filepath.Split(attachment.Content)
-		ext := strings.ToLower(filepath.Ext(attachment.Content))
+		ext := strings.ToLower(filepath.Ext(attachment.Content)) // uppercase file extensions are lame
 		if HasImageExt(ext) {
 			basename := file[0 : len(file)-len(filepath.Ext(file))]
 			tmpfile, err := ioutil.TempFile(".", basename+".*"+ext)
@@ -126,14 +88,8 @@ func downloadIssueAttachments(client *jira.Client, jiraKey string) {
 				return
 			}
 			tmpfile.Close()
-			var name string
-			if sequenceDownloads {
-				name = <-FileNamesChannel
-			} else {
-				name = tmpfile.Name()
-			}
+			name := tmpfile.Name()
 			fmt.Printf("%s --> %s\n", attachment.Content, name)
-			//downloadFile(client, name, attachment.Content)
 			go downloadAttachment(client, attachment.ID, name)
 		} else {
 			fmt.Printf("Skipping %s because it's not an image\n", attachment.Content)
@@ -141,38 +97,40 @@ func downloadIssueAttachments(client *jira.Client, jiraKey string) {
 	}
 }
 
+// callback function provided to jira.SearchPages
 func handleIssue(issue jira.Issue) error {
 	downloadIssueAttachments(jiraClient, issue.Key)
 	return nil
 }
 
 func main() {
-	jiraURL := "https://optimizely.atlassian.net"
-	tp := jira.BasicAuthTransport{
-		Username: "",
-		Password: "",
+	flag.Parse()
+
+	if len(*username) == 0 || len(*password) == 0 {
+		fmt.Printf("No username or API key provided\n")
+		os.Exit(1)
 	}
-	client, err := jira.NewClient(tp.Client(), strings.TrimSpace(jiraURL))
+
+	tp := jira.BasicAuthTransport{
+		Username: *username,
+		Password: *password,
+	}
+	client, err := jira.NewClient(tp.Client(), strings.TrimSpace(*jiraURL))
 	if err != nil {
 		fmt.Printf("\nerror: %v\n", err)
 		return
 	}
 	jiraClient = client
-	sequenceDownloads = false
 
 	if err != nil {
 		fmt.Printf("\nerror: %v\n", err.Error())
 		return
 	}
 
-	if sequenceDownloads {
-		FileNamesChannel := make(chan (string))
-		go writePNGFilenamesToChannel(FileNamesChannel)
-		fmt.Println("first filename: %s", <-FileNamesChannel)
-	}
-	err = client.Issue.SearchPages("labels IN (soc2_IRL_fy19)", nil, handleIssue)
+	err = client.Issue.SearchPages(*jiraQuery, nil, handleIssue)
 	if err != nil {
 		fmt.Printf(err.Error())
 		return
 	}
+	os.Exit(0)
 }
