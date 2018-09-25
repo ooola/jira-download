@@ -2,18 +2,18 @@ package main
 
 import (
 	"fmt"
+	jira "github.com/andygrunwald/go-jira"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
-
-	jira "github.com/andygrunwald/go-jira"
-	//"golang.org/x/crypto/ssh/terminal"
 )
 
 var jiraClient *jira.Client
+var sequenceDownloads bool
+var FileNamesChannel chan string
 
 // returns true if the filename has an image extension
 func HasImageExt(file string) bool {
@@ -28,6 +28,25 @@ func HasImageExt(file string) bool {
 		return true
 	}
 	return false
+}
+
+func writePNGFilenamesToChannel(c chan string) {
+	i := 1
+	for {
+		s := fmt.Sprintf("%04d.png", i)
+		c <- s
+		i++
+	}
+}
+
+func intChannels() {
+	c := make(chan (string))
+	go writePNGFilenamesToChannel(c)
+
+	for i := 0; i < 10; i++ {
+		s := <-c
+		fmt.Println("%s", s)
+	}
 }
 
 func downloadFile(url string, filename string) {
@@ -51,7 +70,6 @@ func downloadFile(url string, filename string) {
 }
 
 func downloadAttachment(client *jira.Client, id string, filename string) {
-	fmt.Printf("downloading attachment %s --> %s\n", id, filename)
 	out, err := os.Create(filename)
 	if err != nil {
 		fmt.Print("Create file: %s failed, error: %s\n", filename, err.Error())
@@ -94,24 +112,36 @@ func downloadIssueAttachments(client *jira.Client, jiraKey string) {
 	}
 	//fmt.Printf("\n\n issue: %s\n", issue)
 
-	fmt.Printf("len issue.Fields: %v\n", issue.Fields)
-	fmt.Printf("\n\t\tdata: %v\n", issue.Fields.Attachments)
-	fmt.Printf("\n\t\ttype: %v\n", len(issue.Fields.Attachments))
-	for i, attachment := range issue.Fields.Attachments {
-		current := time.Now()
-		fmt.Printf("attament content[%d]: %s\n\n", i, attachment.Content)
+	//fmt.Printf("len issue.Fields: %v\n", issue.Fields)
+	//fmt.Printf("\n\t\tdata: %v\n", issue.Fields.Attachments)
+	//fmt.Printf("\n\t\ttype: %v\n", len(issue.Fields.Attachments))
+	for _, attachment := range issue.Fields.Attachments {
 		_, file := filepath.Split(attachment.Content)
-		timeString := strings.Replace(current.String(), " ", "-", -1)
-		name := timeString + "-" + file
-		fmt.Printf("timeString: %s, name: %s, file: %s\n", timeString, name, file)
-		//downloadFile(client, name, attachment.Content)
-		downloadAttachment(client, attachment.ID, file)
-		os.Exit(0)
+		ext := strings.ToLower(filepath.Ext(attachment.Content))
+		if HasImageExt(ext) {
+			basename := file[0 : len(file)-len(filepath.Ext(file))]
+			tmpfile, err := ioutil.TempFile(".", basename+".*"+ext)
+			if err != nil {
+				fmt.Printf("Failed to create TempFile\n")
+				return
+			}
+			tmpfile.Close()
+			var name string
+			if sequenceDownloads {
+				name = <-FileNamesChannel
+			} else {
+				name = tmpfile.Name()
+			}
+			fmt.Printf("%s --> %s\n", attachment.Content, name)
+			//downloadFile(client, name, attachment.Content)
+			go downloadAttachment(client, attachment.ID, name)
+		} else {
+			fmt.Printf("Skipping %s because it's not an image\n", attachment.Content)
+		}
 	}
 }
 
 func handleIssue(issue jira.Issue) error {
-	fmt.Printf("Handling %v\n", issue)
 	downloadIssueAttachments(jiraClient, issue.Key)
 	return nil
 }
@@ -128,12 +158,18 @@ func main() {
 		return
 	}
 	jiraClient = client
+	sequenceDownloads = false
 
 	if err != nil {
 		fmt.Printf("\nerror: %v\n", err.Error())
 		return
 	}
 
+	if sequenceDownloads {
+		FileNamesChannel := make(chan (string))
+		go writePNGFilenamesToChannel(FileNamesChannel)
+		fmt.Println("first filename: %s", <-FileNamesChannel)
+	}
 	err = client.Issue.SearchPages("labels IN (soc2_IRL_fy19)", nil, handleIssue)
 	if err != nil {
 		fmt.Printf(err.Error())
