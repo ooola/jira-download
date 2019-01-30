@@ -9,21 +9,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 var jiraClient *jira.Client
 
-//var numUserComments map[string]int
 var numUserComments = make(map[string]int)
+var lock sync.Mutex
 
-//var usersChan chan string
 var usersChan = make(chan string)
 
 var (
-	username  = flag.String("username", "", "Jira Username")
-	password  = flag.String("password", "", "Jira Auth Key")
-	jiraURL   = flag.String("jiraURL", "https://optimizely.atlassian.net", "URL where Jira is running")
-	jiraQuery = flag.String("jiraQuery", "labels IN (soc2_IRL_fy19)", "The jira query of which ticket attachments to fetch")
+	username       = flag.String("username", "", "Jira Username")
+	password       = flag.String("password", "", "Jira Auth Key")
+	jiraURL        = flag.String("jiraURL", "https://optimizely.atlassian.net", "URL where Jira is running")
+	jiraQuery      = flag.String("jiraQuery", "labels IN (soc2_IRL_fy19)", "The jira query of which ticket attachments to fetch")
+	searchComments = flag.Bool("searchComments", false, "Searches comments in tickets for number of authors and comment count")
 )
 
 // returns true if the filename has an image extension
@@ -127,60 +128,24 @@ func printCommentAuthors(client *jira.Client, jiraKey string) {
 	}
 
 	for _, comment := range issue.Fields.Comments.Comments {
-		//	fmt.Printf("comment: %v\n", comment)
-		fmt.Printf("comment author: %v\n", comment.Author.Name)
-		// TODO Add count of comments from each author
-		//numComments[comment.Author.Name]++
-		usersChan <- comment.Author.Name
-		//fmt.Printf("sent into channel\n")
-		/*
-			_, file := filepath.Split(attachment.Content)
-			ext := strings.ToLower(filepath.Ext(attachment.Content)) // uppercase file extensions are lame
-			if HasImageExt(ext) {
-				basename := file[0 : len(file)-len(filepath.Ext(file))]
-				tmpfile, err := ioutil.TempFile(".", basename+".*"+ext)
-				if err != nil {
-					fmt.Printf("Failed to create TempFile\n")
-					return
-				}
-				tmpfile.Close()
-				name := tmpfile.Name()
-				go downloadAttachment(client, attachment.ID, name)
-			} else {
-				fmt.Printf("Skipping %s because it's not an image\n", attachment.Content)
-			}
-		*/
+		lock.Lock()
+		numUserComments[comment.Author.Name]++
+		lock.Unlock()
 	}
 }
 
 // callback function provided to jira.SearchPages
 func handleIssue(issue jira.Issue) error {
-	//downloadIssueAttachments(jiraClient, issue.Key)
-	printCommentAuthors(jiraClient, issue.Key)
-	return nil
-}
-
-// updates the numUserComments table
-func updateUserCommentsTable(users chan string) {
-
-	// read names off the users channel and update the number of comments per user table
-	for {
-		fmt.Printf("reading from users channel\n")
-		select {
-		case u := <-usersChan:
-			fmt.Printf("got user: %v\n", u)
-			numUserComments[u]++
-			fmt.Printf("new map: %v\n", numUserComments)
-		}
+	if *searchComments {
+		printCommentAuthors(jiraClient, issue.Key)
+	} else {
+		downloadIssueAttachments(jiraClient, issue.Key)
 	}
-
+	return nil
 }
 
 func main() {
 	flag.Parse()
-	//numUserComments = make(map[string]int)
-	//usersChan := make(chan string, 20)
-	go updateUserCommentsTable(usersChan)
 
 	if len(*username) == 0 || len(*password) == 0 {
 		fmt.Printf("No username or API key provided\n")
@@ -208,7 +173,10 @@ func main() {
 		fmt.Printf(err.Error())
 		return
 	}
-	// TODO: must wait for channel to be drained
-	fmt.Printf("---%v\n", numUserComments)
+	if *searchComments {
+		for name, count := range numUserComments {
+			fmt.Printf("%s %d\n", name, count)
+		}
+	}
 	os.Exit(0)
 }
