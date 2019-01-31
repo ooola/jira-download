@@ -3,11 +3,13 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/andlabs/ui"
 	jira "github.com/andygrunwald/go-jira"
 	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -18,6 +20,8 @@ var numUserComments = make(map[string]int)
 var lock sync.Mutex
 
 var usersChan = make(chan string)
+
+var box *ui.Box
 
 var (
 	username       = flag.String("username", "", "Jira Username")
@@ -144,39 +148,69 @@ func handleIssue(issue jira.Issue) error {
 	return nil
 }
 
+//funcUpdateUI()
+
 func main() {
 	flag.Parse()
+	*searchComments = true
 
-	if len(*username) == 0 || len(*password) == 0 {
-		fmt.Printf("No username or API key provided\n")
-		os.Exit(1)
-	}
+	err2 := ui.Main(func() {
+		userInput := ui.NewEntry()
+		passInput := ui.NewEntry()
+		queryInput := ui.NewEntry()
+		button := ui.NewButton("Execute Query")
+		greeting := ui.NewLabel("")
+		box = ui.NewVerticalBox()
+		box.Append(ui.NewLabel("Enter your username:"), false)
+		box.Append(userInput, false)
+		box.Append(ui.NewLabel("Enter password (token):"), false)
+		box.Append(passInput, false)
+		box.Append(ui.NewLabel("Enter query:"), false)
+		box.Append(queryInput, false)
+		box.Append(button, false)
+		box.Append(greeting, false)
+		window := ui.NewWindow("Jira Query Tool", 200, 100, false)
+		window.SetMargined(true)
+		window.SetChild(box)
+		button.OnClicked(func(*ui.Button) {
+			greeting.SetText("Executing query, " + queryInput.Text() + " ...")
+			tp := jira.BasicAuthTransport{
+				Username: userInput.Text(),
+				Password: passInput.Text(),
+			}
+			client, err := jira.NewClient(tp.Client(), strings.TrimSpace(*jiraURL))
+			if err != nil {
+				//greeting.SetText("\nerror: " + string(err))
+				return
+			}
+			jiraClient = client
 
-	tp := jira.BasicAuthTransport{
-		Username: *username,
-		Password: *password,
-	}
-	client, err := jira.NewClient(tp.Client(), strings.TrimSpace(*jiraURL))
-	if err != nil {
-		fmt.Printf("\nerror: %v\n", err)
-		return
-	}
-	jiraClient = client
+			if err != nil {
+				//greeting.SetText("\nerror: %v\n", err.Error())
+				return
+			}
 
-	if err != nil {
-		fmt.Printf("\nerror: %v\n", err.Error())
-		return
+			err = client.Issue.SearchPages(queryInput.Text(), nil, handleIssue)
+			if err != nil {
+				greeting.SetText(err.Error())
+				return
+			}
+			if *searchComments {
+				for name, count := range numUserComments {
+					c := strconv.Itoa(count)
+					line := name + " " + c
+					//fmt.Printf("%s %d\n", name, count)
+					box.Append(ui.NewLabel(line), false)
+				}
+			}
+		})
+		window.OnClosing(func(*ui.Window) bool {
+			ui.Quit()
+			return true
+		})
+		window.Show()
+	})
+	if err2 != nil {
+		panic(err2)
 	}
-
-	err = client.Issue.SearchPages(*jiraQuery, nil, handleIssue)
-	if err != nil {
-		fmt.Printf(err.Error())
-		return
-	}
-	if *searchComments {
-		for name, count := range numUserComments {
-			fmt.Printf("%s %d\n", name, count)
-		}
-	}
-	os.Exit(0)
 }
